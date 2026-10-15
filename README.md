@@ -174,6 +174,14 @@ You can also paste a cURL command into the URL bar to turn it into a request, or
 
 ## Get started
 
+### Download
+
+Get the latest **`tessera-…-windows-x64.exe`** from [Releases](https://github.com/theoddprince/tessera/releases/latest). It's a single file with nothing to install. Windows 10/11 x64 is required.
+
+> The executable isn't code-signed yet. If Windows SmartScreen says *"Windows protected your PC"*, click **More info → Run anyway**.
+
+### Build from source
+
 You need a stable Rust toolchain from [rustup.rs](https://rustup.rs). On Windows you also need the MSVC build tools.
 
 ```sh
@@ -183,7 +191,7 @@ cargo build --release
 ./target/release/tessera          # Windows: target\release\tessera.exe
 ```
 
-Prebuilt Windows builds are attached to every [CI run](https://github.com/theoddprince/tessera/actions/workflows/ci.yml) as the `tessera-windows-x64` artifact.
+To publish a new release, push a version tag (`git tag v0.2.0 && git push origin v0.2.0`). The [Release workflow](.github/workflows/release.yml) builds, tests and attaches the executable automatically.
 
 | OS | Notes |
 |---|---|

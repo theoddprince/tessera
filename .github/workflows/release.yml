@@ -1,0 +1,46 @@
+name: Release
+
+# Push a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build
+# tessera.exe and publish it as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Build and publish (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build --release -p tessera
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/tessera.exe "dist/tessera-$version-windows-x64.exe"
+          Compress-Archive -Path target/release/tessera.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/tessera-$version-windows-x64.zip"
+          Get-ChildItem dist -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Tessera ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
