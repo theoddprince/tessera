@@ -1,7 +1,3 @@
-<p align="center">
-  <img alt="Tessera icon" src="crates/app/assets/icon-256.png" width="120">
-</p>
-
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="crates/app/assets/brand/wordmark-dark-1000.png">
