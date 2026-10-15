@@ -2,6 +2,15 @@ name: Release
 
 # Push a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build
 # tessera.exe and publish it as a GitHub release.
+#
+# Code signing (free, via SignPath Foundation for open-source projects) switches on
+# automatically once these are set in the repo settings:
+#   Settings → Secrets and variables → Actions
+#     secret    SIGNPATH_API_TOKEN
+#     variable  SIGNPATH_ORGANIZATION_ID
+#     variable  SIGNPATH_PROJECT_SLUG          (e.g. tessera)
+#     variable  SIGNPATH_SIGNING_POLICY_SLUG   (e.g. release-signing)
+# Until then, releases are published unsigned.
 on:
   push:
     tags: ["v*"]
@@ -24,13 +33,40 @@ jobs:
         run: cargo test --workspace
       - name: Build
         run: cargo build --release -p tessera
+
+      # SignPath only signs files that were built by this workflow, so the unsigned
+      # exe is uploaded as an artifact and SignPath returns the signed copy.
+      - name: Upload unsigned build
+        id: unsigned
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tessera-unsigned
+          path: target/release/tessera.exe
+      - name: Sign with SignPath
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
       - name: Package
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
+          $exe = if (Test-Path signed/tessera.exe) { "signed/tessera.exe" } else { "target/release/tessera.exe" }
+          $sig = Get-AuthenticodeSignature $exe
+          "Packaging $exe (signature: $($sig.Status), signer: $($sig.SignerCertificate.Subject))"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/tessera.exe "dist/tessera-$version-windows-x64.exe"
-          Compress-Archive -Path target/release/tessera.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/tessera-$version-windows-x64.zip"
+          Copy-Item $exe "dist/tessera-$version-windows-x64.exe"
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item $exe pkg/tessera.exe
+          Compress-Archive -Path pkg/tessera.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/tessera-$version-windows-x64.zip"
           Get-ChildItem dist -File | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content dist/SHA256SUMS.txt
