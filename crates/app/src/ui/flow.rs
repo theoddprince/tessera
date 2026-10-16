@@ -13,7 +13,7 @@ use tessera_core::model::{new_id, AuthKind, Collection, Item, Request};
 
 use crate::app::Action;
 use crate::theme;
-use crate::ui::sidebar::DragItem;
+use crate::ui::sidebar::{matches_filter, DragItem};
 use crate::ui::widgets::{self, dim, pal};
 
 const NODE_W: f32 = 236.0;
@@ -43,6 +43,8 @@ pub struct FlowView {
     pub selected: Selection,
     pub connecting: Option<String>,
     pub run: FlowRun,
+    /// Search text in the "Add request" picker.
+    pub pick_filter: String,
 }
 
 fn find<'a>(cols: &'a [Collection], n: &FlowNode) -> Option<(&'a Collection, &'a Request)> {
@@ -127,6 +129,32 @@ fn add_item(flow: &mut Flow, cols: &[Collection], collection_id: &str, item_id: 
     last
 }
 
+/// Folder tree for the "Add request" picker; sets `picked` to the clicked request's id.
+fn pick_tree(ui: &mut Ui, items: &[Item], f: &str, picked: &mut Option<String>) {
+    for item in items {
+        if !matches_filter(item, f) {
+            continue;
+        }
+        match item {
+            Item::Folder(fd) => {
+                egui::CollapsingHeader::new(format!("📁 {}", fd.name))
+                    .id_salt(("pick", &fd.id))
+                    .open((!f.is_empty()).then_some(true))
+                    .show(ui, |ui| pick_tree(ui, &fd.items, f, picked));
+            }
+            Item::Request(r) => {
+                let resp = ui.horizontal(|ui| {
+                    widgets::method_badge(ui, r.badge());
+                    ui.add(egui::Button::new(&r.name).frame(false))
+                });
+                if resp.inner.on_hover_text(&r.url).clicked() {
+                    *picked = Some(r.id.clone());
+                }
+            }
+        }
+    }
+}
+
 /// Returns true when the flow was modified.
 pub fn show(ui: &mut Ui, flow: &mut Flow, view: &mut FlowView, cols: &[Collection], actions: &mut Vec<Action>) -> bool {
     let p = pal(ui);
@@ -150,31 +178,53 @@ pub fn show(ui: &mut Ui, flow: &mut Flow, view: &mut FlowView, cols: &[Collectio
             }
         }
         ui.menu_button("➕ Add request", |ui| {
-            ui.set_max_height(420.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.set_min_width(300.0);
+            let search = ui.add(egui::TextEdit::singleline(&mut view.pick_filter).hint_text("🔍 Search requests…").desired_width(f32::INFINITY));
+            if !search.has_focus() && ui.memory(|m| m.focused().is_none()) {
+                search.request_focus();
+            }
+            ui.separator();
+            let f = view.pick_filter.trim().to_lowercase();
+            let mut picked = None;
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                 if cols.is_empty() {
                     ui.label(dim(ui, "No collections yet"));
                 }
+                let mut any = false;
                 for c in cols {
-                    ui.label(RichText::new(&c.name).strong());
-                    for r in c.all_requests() {
-                        let resp = ui.horizontal(|ui| {
-                            widgets::method_badge(ui, r.badge());
-                            ui.add(egui::Button::new(&r.name).frame(false))
-                        });
-                        if resp.inner.clicked() {
-                            let n = flow.nodes.len() as f32;
-                            let at = Vec2::new(40.0 + (n % 4.0) * (NODE_W + 70.0), 40.0 + (n / 4.0).floor() * (NODE_H + 60.0)) - view.pan;
-                            if let Some(id) = add_item(flow, cols, &c.id, &r.id, at) {
-                                view.selected = Selection::Node(id);
-                                changed = true;
-                            }
-                            ui.close_menu();
-                        }
+                    if !f.is_empty() && !c.items.iter().any(|i| matches_filter(i, &f)) {
+                        continue;
                     }
-                    ui.separator();
+                    any = true;
+                    let mut req = None;
+                    egui::CollapsingHeader::new(RichText::new(format!("🗄 {}", c.name)).strong())
+                        .id_salt(("pick", &c.id))
+                        .default_open(cols.len() == 1)
+                        .open((!f.is_empty()).then_some(true))
+                        .show(ui, |ui| {
+                            if c.items.is_empty() {
+                                ui.label(dim(ui, "Empty collection"));
+                            }
+                            pick_tree(ui, &c.items, &f, &mut req);
+                        });
+                    if let Some(r) = req {
+                        picked = Some((c.id.clone(), r));
+                    }
+                }
+                if !any && !cols.is_empty() {
+                    ui.label(dim(ui, "No matching requests"));
                 }
             });
+            if let Some((cid, rid)) = picked {
+                let n = flow.nodes.len() as f32;
+                let at = Vec2::new(40.0 + (n % 4.0) * (NODE_W + 70.0), 40.0 + (n / 4.0).floor() * (NODE_H + 60.0)) - view.pan;
+                if let Some(id) = add_item(flow, cols, &cid, &rid, at) {
+                    view.selected = Selection::Node(id);
+                    changed = true;
+                }
+                view.pick_filter.clear();
+                ui.close_menu();
+            }
         });
         if ui.button("⌖ Center").on_hover_text("Bring all steps into view").clicked() {
             view.pan = Vec2::ZERO;
