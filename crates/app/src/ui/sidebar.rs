@@ -43,6 +43,38 @@ enum RowKind<'a> {
 struct RowOut {
     clicked: bool,
     response: egui::Response,
+    /// The `⋯` button; `None` while the row is being renamed.
+    dots: Option<egui::Response>,
+}
+
+/// Shows a row's menu on right-click and when its `⋯` button is clicked.
+fn row_menu(ui: &Ui, out: &RowOut, mut add: impl FnMut(&mut Ui)) {
+    out.response.context_menu(|ui| add(ui));
+    if let Some(dots) = &out.dots {
+        let popup_id = dots.id.with("popup");
+        if dots.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup_id));
+        }
+        egui::popup_below_widget(ui, popup_id, dots, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+            ui.set_min_width(200.0);
+            add(ui);
+        });
+    }
+}
+
+/// Inline rename box. Takes focus once, then commits on Enter or click-away, cancels on Escape.
+fn rename_edit(ui: &mut Ui, rect: egui::Rect, ctx: &mut SidebarCtx) {
+    let (_, buf) = ctx.renaming.as_mut().unwrap();
+    let te = ui.put(rect, egui::TextEdit::singleline(buf).desired_width(rect.width()));
+    if te.lost_focus() {
+        let commit = !ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let (rid, name) = ctx.renaming.take().unwrap();
+        if commit && !name.trim().is_empty() {
+            ctx.actions.push(Action::Rename { id: rid, name: name.trim().to_string() });
+        }
+    } else if !te.has_focus() {
+        te.request_focus();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,10 +83,17 @@ fn row(ui: &mut Ui, depth: usize, kind: RowKind, label: &str, id: &str, open: bo
     let dark = ui.visuals().dark_mode;
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click_and_drag());
+    let renaming = ctx.renaming.as_ref().is_some_and(|(rid, _)| rid == id);
+    let dots_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - 24.0, rect.top()), rect.right_bottom());
+    let dots_id = egui::Id::new(("row-menu", id));
+    let dots = (!renaming).then(|| ui.interact(dots_rect, dots_id, Sense::click()));
+    let dots_hovered = dots.as_ref().is_some_and(|d| d.hovered());
+    let menu_open = ui.memory(|m| m.is_popup_open(dots_id.with("popup")));
+    let hovered = response.hovered() || dots_hovered || menu_open;
     let painter = ui.painter_at(rect);
     if selected {
         painter.rect_filled(rect, 5.0, p.accent.gamma_multiply(0.18));
-    } else if response.hovered() {
+    } else if hovered {
         painter.rect_filled(rect, 5.0, p.surface_hi);
     }
     let mut x = rect.left() + 8.0 + depth as f32 * 14.0;
@@ -80,19 +119,9 @@ fn row(ui: &mut Ui, depth: usize, kind: RowKind, label: &str, id: &str, open: bo
         }
     }
 
-    let renaming = ctx.renaming.as_ref().is_some_and(|(rid, _)| rid == id);
     if renaming {
         let text_rect = egui::Rect::from_min_max(egui::pos2(x, rect.top() + 2.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 2.0));
-        let (_, buf) = ctx.renaming.as_mut().unwrap();
-        let te = ui.put(text_rect, egui::TextEdit::singleline(buf).desired_width(text_rect.width()));
-        te.request_focus();
-        if te.lost_focus() {
-            let commit = !ui.input(|i| i.key_pressed(egui::Key::Escape));
-            let (rid, name) = ctx.renaming.take().unwrap();
-            if commit && !name.trim().is_empty() {
-                ctx.actions.push(Action::Rename { id: rid, name: name.trim().to_string() });
-            }
-        }
+        rename_edit(ui, text_rect, ctx);
     } else {
         let font = FontId::proportional(13.0);
         let max_w = rect.right() - x - 26.0;
@@ -102,8 +131,12 @@ fn row(ui: &mut Ui, depth: usize, kind: RowKind, label: &str, id: &str, open: bo
             f.layout_job(job)
         });
         painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, p.text);
-        if response.hovered() {
-            painter.text(egui::pos2(rect.right() - 10.0, cy), Align2::RIGHT_CENTER, "⋯", FontId::proportional(14.0), p.dim);
+        if hovered {
+            if dots_hovered || menu_open {
+                painter.rect_filled(dots_rect.shrink(3.0), 4.0, p.surface_hi);
+            }
+            let color = if dots_hovered || menu_open { p.text } else { p.dim };
+            painter.text(egui::pos2(rect.right() - 10.0, cy), Align2::RIGHT_CENTER, "⋯", FontId::proportional(14.0), color);
         }
     }
 
@@ -116,10 +149,10 @@ fn row(ui: &mut Ui, depth: usize, kind: RowKind, label: &str, id: &str, open: bo
             painter.rect_stroke(rect, 5.0, egui::Stroke::new(1.5_f32, p.accent), egui::StrokeKind::Inside);
         }
     }
-    RowOut { clicked: response.clicked() && !renaming, response }
+    RowOut { clicked: response.clicked() && !renaming, response, dots }
 }
 
-fn matches_filter(item: &Item, f: &str) -> bool {
+pub(crate) fn matches_filter(item: &Item, f: &str) -> bool {
     if f.is_empty() {
         return true;
     }
@@ -162,7 +195,7 @@ pub fn collections(ui: &mut Ui, cols: &[Collection], ctx: &mut SidebarCtx) {
         if let Some(drag) = out.response.dnd_release_payload::<DragItem>() {
             ctx.actions.push(Action::Move { from_collection: drag.collection_id.clone(), item_id: drag.item_id.clone(), to_collection: c.id.clone(), container: c.id.clone(), index: None });
         }
-        out.response.context_menu(|ui| container_menu(ui, c, None, ctx));
+        row_menu(ui, &out, |ui| container_menu(ui, c, None, ctx));
         if open {
             items(ui, c, &c.items, 1, &f, ctx);
             if c.items.is_empty() {
@@ -204,7 +237,7 @@ fn items(ui: &mut Ui, c: &Collection, list: &[Item], depth: usize, f: &str, ctx:
                         ctx.actions.push(Action::Move { from_collection: drag.collection_id.clone(), item_id: drag.item_id.clone(), to_collection: c.id.clone(), container: fd.id.clone(), index: None });
                     }
                 }
-                out.response.context_menu(|ui| container_menu(ui, c, Some((&fd.id, &fd.name)), ctx));
+                row_menu(ui, &out, |ui| container_menu(ui, c, Some((&fd.id, &fd.name)), ctx));
                 if open {
                     items(ui, c, &fd.items, depth + 1, f, ctx);
                 }
@@ -222,8 +255,8 @@ fn items(ui: &mut Ui, c: &Collection, list: &[Item], depth: usize, f: &str, ctx:
                         ctx.actions.push(Action::Move { from_collection: drag.collection_id.clone(), item_id: drag.item_id.clone(), to_collection: c.id.clone(), container, index: Some(index) });
                     }
                 }
-                let resp = out.response.on_hover_text_at_pointer(format!("{} {}", r.badge(), r.url));
-                resp.context_menu(|ui| {
+                let out = RowOut { response: out.response.on_hover_text_at_pointer(format!("{} {}", r.badge(), r.url)), ..out };
+                row_menu(ui, &out, |ui| {
                     if ui.button("Open").clicked() {
                         ctx.actions.push(Action::OpenRequest { collection_id: c.id.clone(), request_id: r.id.clone() });
                         ui.close_menu();
@@ -411,16 +444,7 @@ pub fn flows(ui: &mut Ui, flows: &[tessera_core::flow::Flow], ctx: &mut SidebarC
         painter.text(egui::pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, "⇢", FontId::proportional(15.0), p.accent);
         if renaming {
             let text_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 30.0, rect.top() + 4.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 4.0));
-            let (_, buf) = ctx.renaming.as_mut().unwrap();
-            let te = ui.put(text_rect, egui::TextEdit::singleline(buf));
-            te.request_focus();
-            if te.lost_focus() {
-                let commit = !ui.input(|i| i.key_pressed(egui::Key::Escape));
-                let (rid, name) = ctx.renaming.take().unwrap();
-                if commit && !name.trim().is_empty() {
-                    ctx.actions.push(Action::Rename { id: rid, name: name.trim().to_string() });
-                }
-            }
+            rename_edit(ui, text_rect, ctx);
         } else {
             painter.text(egui::pos2(rect.left() + 30.0, rect.center().y - 7.0), Align2::LEFT_CENTER, &flow.name, FontId::proportional(13.0), p.text);
             painter.text(
